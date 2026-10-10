@@ -7,7 +7,6 @@
  */
 import { type Bot, type Context, InlineKeyboard } from "grammy";
 import { reasoningLabel } from "../../app/reasoning.js";
-import { REASONING_LEVELS, type ReasoningEffort } from "../../app/types.js";
 import type { BotDeps } from "../deps.js";
 import { BAR_LABELS, compactKeyboard, mainMenuInline, MENU_BTN, RUNNING_BTN, STOP_BTN } from "../menu/keyboard.js";
 import { refreshMenu } from "../menu/refresh.js";
@@ -61,22 +60,26 @@ export function registerMenu(bot: Bot, deps: BotDeps): void {
   });
 
   // ── Reasoning ──────────────────────────────────────────────────────────────
-  bot.callbackQuery(/^reason:(minimal|low|medium|high|max)$/, async (ctx) => {
-    const level = ctx.match![1] as ReasoningEffort;
-    deps.registry.get(ctx.chat!.id).setReasoningPref(level);
-    await confirm(ctx, deps, `\u{1F9E0} Reasoning: ${reasoningLabel(level)}`);
+  bot.callbackQuery(/^reason:([a-z]+)$/, async (ctx) => {
+    const level = ctx.match![1] === "default" ? "" : ctx.match![1]!;
+    try {
+      await deps.registry.get(ctx.chat!.id).setReasoningPref(level);
+      await confirm(ctx, deps, `\u{1F9E0} Reasoning: ${reasoningLabel(level)}`);
+    } catch (e) {
+      await ctx.answerCallbackQuery({ text: (e as Error).message });
+    }
   });
 
   // ── Model ────────────────────────────────────────────────────────────────
-  bot.callbackQuery(/^model:set:(\d+)$/, async (ctx) => {
-    const entry = deps.acp.availableModels[Number(ctx.match![1])];
+  bot.callbackQuery(/^model:set:(.+)$/, async (ctx) => {
+    const entry = deps.acp.availableModels.find((m) => m.modelId === ctx.match![1]);
     if (!entry) return void ctx.answerCallbackQuery({ text: "Expired, tap Model again." });
     const res = await deps.registry.get(ctx.chat!.id).setModelPref(entry.modelId);
     await confirm(ctx, deps, res.ok ? `\u{1F9E9} Model: ${entry.name}` : `\u26A0\uFE0F Model set failed: ${res.error}`);
   });
   bot.callbackQuery("model:clear", async (ctx) => {
-    await deps.registry.get(ctx.chat!.id).setModelPref("");
-    await confirm(ctx, deps, "\u{1F9E9} Model: default");
+    const res = await deps.registry.get(ctx.chat!.id).setModelPref("");
+    await confirm(ctx, deps, res.ok ? "\u{1F9E9} Model: default" : `Model set failed: ${res.error}`);
   });
 }
 
@@ -164,7 +167,7 @@ async function confirm(ctx: Context, deps: BotDeps, text: string): Promise<void>
 
 async function showAgentMenu(ctx: Context, deps: BotDeps): Promise<void> {
   const rt = deps.registry.get(ctx.chat!.id);
-  await ensureReady(ctx, rt);
+  await deps.acp.refreshInventories();
   await deps.ephemeral.open(ctx);
   const modes = deps.acp.availableModes.slice(0, 60);
   if (modes.length === 0) {
@@ -178,38 +181,29 @@ async function showAgentMenu(ctx: Context, deps: BotDeps): Promise<void> {
 
 async function showReasoningMenu(ctx: Context, deps: BotDeps): Promise<void> {
   const rt = deps.registry.get(ctx.chat!.id);
+  await deps.acp.refreshInventories();
   await deps.ephemeral.open(ctx);
   const kb = new InlineKeyboard();
-  REASONING_LEVELS.forEach((l) => kb.text(`${l === rt.reasoning ? "\u2713 " : ""}${reasoningLabel(l)}`, `reason:${l}`));
-  await deps.ephemeral.reply(ctx, `Current reasoning: ${reasoningLabel(rt.reasoning)}\nChoose effort:`, { reply_markup: kb });
+  const model = deps.acp.availableModels.find((m) => m.modelId === rt.model);
+  if (!model) return void deps.ephemeral.reply(ctx, deps.acp.modelInventoryError ? "Codex model refresh failed. Try again shortly." : "No reasoning options were reported for this model.");
+  model.supportedReasoningEfforts.forEach((l) => kb.text(`${l === rt.reasoning ? "\u2713 " : ""}${reasoningLabel(l)}`, `reason:${l}`).row());
+  kb.text("Default", "reason:default");
+  await deps.ephemeral.reply(ctx, `Model: ${model.name}\nCurrent reasoning: ${reasoningLabel(rt.reasoning)}\nChoose native Codex effort:`, { reply_markup: kb });
 }
 
 async function showModelMenu(ctx: Context, deps: BotDeps): Promise<void> {
   const rt = deps.registry.get(ctx.chat!.id);
-  await ensureReady(ctx, rt);
+  await deps.acp.refreshInventories();
   await deps.ephemeral.open(ctx);
   const models = deps.acp.availableModels;
   if (models.length === 0) {
-    await deps.ephemeral.reply(ctx, "No selectable models reported by Codex yet \u2014 send a message first, then try again.");
+    await deps.ephemeral.reply(ctx, deps.acp.modelInventoryError ? "Codex model refresh failed. Try again shortly." : "No selectable models were reported by Codex.");
     return;
   }
   const current = rt.model || deps.acp.currentModelId;
   const kb = new InlineKeyboard();
-  models.forEach((m, i) => kb.text(`${m.modelId === current ? "\u2713 " : ""}${m.name}`, `model:set:${i}`).row());
+  // shortcut: Telegram caps callback data at 64 bytes; longer ids use /model.
+  models.filter((m) => Buffer.byteLength(`model:set:${m.modelId}`) <= 64).forEach((m) => kb.text(`${m.modelId === current ? "\u2713 " : ""}${m.name}`, `model:set:${m.modelId}`).row());
   kb.text("Default (agent's model)", "model:clear");
-  await deps.ephemeral.reply(ctx, `Current model: ${rt.model || "default"}\nChoose a model:`, { reply_markup: kb });
-}
-
-/** Ensure a session is live so models/modes are populated; show typing meanwhile. */
-async function ensureReady(ctx: Context, rt: { prepare: () => Promise<void> }): Promise<void> {
-  try {
-    await ctx.replyWithChatAction("typing");
-  } catch {
-    /* ignore */
-  }
-  try {
-    await rt.prepare();
-  } catch {
-    /* menu will show whatever is available */
-  }
+  await deps.ephemeral.reply(ctx, `Codex ${deps.acp.agentInfo?.version ?? "unknown version"} · live model/list\nCurrent model: ${rt.model || "default"}\nChoose a model (or use /model <id>):`, { reply_markup: kb });
 }

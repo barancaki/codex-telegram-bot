@@ -27,13 +27,10 @@ export function registerSystem(bot: Bot, deps: BotDeps): void {
       await ctx.reply("Usage: /model <model-id>  (changes the model for the current session)");
       return;
     }
-    if (!rt.sessionId) {
-      await ctx.reply("No active session yet. Send a message or pick a /projects folder first.");
-      return;
-    }
     try {
-      await deps.acp.setModel(rt.sessionId, modelId);
-      await ctx.reply(`\u2705 Model set to \`${modelId}\` for this session.`, { parse_mode: "Markdown" });
+      await deps.acp.refreshInventories();
+      const result = await rt.setModelPref(modelId);
+      await ctx.reply(result.ok ? `\u2705 Model set to ${modelId} for this chat's session.` : `\u274C Could not set model: ${result.error}`);
     } catch (err) {
       await ctx.reply(`\u274C Could not set model: ${(err as Error).message}`);
     }

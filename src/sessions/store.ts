@@ -10,7 +10,7 @@
  * (see `/running`).
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { closeSync, openSync, readSync } from "node:fs";
 import { createLogger } from "../logger.js";
 import { readFirstPrompt } from "./history.js";
@@ -26,6 +26,11 @@ interface Indexed {
   sessionId: string;
   path: string;
   mtimeMs: number;
+}
+
+interface SessionName {
+  title: string;
+  updatedAt: string;
 }
 
 export class SessionStore {
@@ -45,9 +50,10 @@ export class SessionStore {
   /** List all sessions, most recently updated first. */
   list(limit = 50): SessionMeta[] {
     const files = this.scan();
+    const names = this.readSessionNames();
     const metas: SessionMeta[] = [];
     for (const f of files) {
-      const meta = this.readMeta(f);
+      const meta = this.readMeta(f, names.get(f.sessionId));
       if (meta) metas.push(meta);
     }
     metas.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -62,7 +68,7 @@ export class SessionStore {
   get(sessionId: string): SessionMeta | undefined {
     const path = this.resolvePath(sessionId);
     if (!path) return undefined;
-    return this.readMeta({ sessionId, path, mtimeMs: safeMtime(path) });
+    return this.readMeta({ sessionId, path, mtimeMs: safeMtime(path) }, this.readSessionNames().get(sessionId));
   }
 
   jsonlPath(sessionId: string): string {
@@ -101,7 +107,32 @@ export class SessionStore {
     return this.index.get(sessionId);
   }
 
-  private readMeta(f: Indexed): SessionMeta | undefined {
+  private readSessionNames(): Map<string, SessionName> {
+    const names = new Map<string, SessionName>();
+    let text: string;
+    try {
+      text = readFileSync(join(dirname(this.dir), "session_index.jsonl"), "utf-8");
+    } catch {
+      return names; // Older Codex installs do not have a desktop title index.
+    }
+    for (const line of text.split("\n")) {
+      try {
+        const row = JSON.parse(line) as { id?: unknown; thread_name?: unknown; updated_at?: unknown };
+        if (typeof row.id !== "string" || typeof row.thread_name !== "string" || typeof row.updated_at !== "string") continue;
+        const id = row.id.toLowerCase();
+        const title = row.thread_name.replace(/\s+/g, " ").trim();
+        const time = Date.parse(row.updated_at);
+        if (!title || !Number.isFinite(time)) continue;
+        const prior = names.get(id);
+        if (!prior || time >= Date.parse(prior.updatedAt)) names.set(id, { title, updatedAt: new Date(time).toISOString() });
+      } catch {
+        // A partially appended index row must not hide the saved conversations.
+      }
+    }
+    return names;
+  }
+
+  private readMeta(f: Indexed, name?: SessionName): SessionMeta | undefined {
     let mtimeIso = new Date(f.mtimeMs || 0).toISOString();
     let historyBytes = 0;
     try {
@@ -114,7 +145,8 @@ export class SessionStore {
     const head = readMetaLine(f.path);
     const cwd = head.cwd || "";
     const createdAt = head.createdAt || mtimeIso;
-    const title = firstPromptTitle(f.path);
+    const title = name?.title || firstPromptTitle(f.path);
+    if (name && Date.parse(name.updatedAt) > Date.parse(mtimeIso)) mtimeIso = name.updatedAt;
 
     return {
       sessionId: f.sessionId,

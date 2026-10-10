@@ -29,25 +29,45 @@ export interface SessionCard {
   keyboard: InlineKeyboard;
 }
 
+/** One compact picker; full details are opened only after a title is selected. */
+export function buildSessionPage(metas: SessionMeta[], heading: string, page: number): SessionCard {
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(metas.length / pageSize));
+  const current = Math.min(Math.max(0, page), totalPages - 1);
+  const start = current * pageSize;
+  const keyboard = new InlineKeyboard();
+  const lines = [`${heading} · ${metas.length} sohbet · Sayfa ${current + 1}/${totalPages}`, ""];
+  for (const [index, meta] of metas.slice(start, start + pageSize).entries()) {
+    const number = start + index + 1;
+    const title = meta.title.length > 70 ? meta.title.slice(0, 69) + "…" : meta.title;
+    lines.push(`${number}. ${title}`, `   ${meta.cwd ? basename(meta.cwd) : "Proje yok"} · ${sessionDate(meta.updatedAt)}`);
+    keyboard.text(`${number}. ${title}`, `sc:${meta.sessionId}:${current}`).row();
+  }
+  if (current > 0) keyboard.text("◀ Önceki", `sp:${current - 1}`);
+  if (totalPages > 1) keyboard.text(`${current + 1}/${totalPages}`, "noop");
+  if (current < totalPages - 1) keyboard.text("Sonraki ▶", `sp:${current + 1}`);
+  lines.push("", "Başlığı seç → ayrıntı ve bağlantı seçenekleri", "Ara: /sessions kelime · Doğrudan: /sessions UUID");
+  return { text: lines.join("\n"), keyboard };
+}
+
 /** Build the card body + buttons for one session. */
 export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}): SessionCard {
-  const dot = m.active ? "\u{1F7E2}" : "\u26AA";
-  const state = m.active ? `running${m.lockPid ? ` \u00B7 pid ${m.lockPid}` : ""}` : "idle";
-  const proj = m.cwd ? basename(m.cwd) : "(no project)";
+  const state = m.active ? "Çalışıyor" : "Kaydedilmiş sohbet";
+  const proj = m.cwd ? basename(m.cwd) : "Proje yok";
 
-  const lines = [`${dot} ${m.title}`, `\u{1F4C1} ${proj}`];
+  const lines = [`${m.title}`, `Proje: ${proj}`];
   if (m.cwd) lines.push(`   ${m.cwd}`);
-  lines.push(`\u{1F552} updated ${relTime(m.updatedAt)} \u00B7 created ${relTime(m.createdAt)}`);
-  const ctx = typeof extra.contextPct === "number" ? ` \u00B7 \u{1F9E0} ctx ${Math.round(extra.contextPct)}%` : "";
-  lines.push(`\u{1F4CA} ${state} \u00B7 \u{1F4DC} history ${humanSize(m.historyBytes)}${ctx}`);
+  lines.push(`Güncelleme: ${sessionDate(m.updatedAt)}`, `Oluşturma: ${sessionDate(m.createdAt)}`);
+  const ctx = typeof extra.contextPct === "number" ? ` · Bağlam ${Math.round(extra.contextPct)}%` : "";
+  lines.push(`${state} · Geçmiş ${humanSize(m.historyBytes)}${ctx}`);
   if (typeof extra.progress === "number") lines.push(`\u{1F4C8} ${progressBar(extra.progress)}`);
-  lines.push(`\u{1F194} ${m.sessionId.slice(0, 8)}`);
+  lines.push(`ID: ${m.sessionId}`);
 
-  const connect = m.active ? "\u{1F374} Continue (fork)" : "\u{1F517} Resume";
+  const connect = m.active ? "Devam et (kopya)" : "Bağlan";
   const keyboard = new InlineKeyboard()
     .text(connect, `sess:${m.sessionId}`)
-    .text("\u{1F4DC} History", `hist:${m.sessionId}`)
-    .text("\u{1F4E1} Watch", `watch:${m.sessionId}`);
+    .text("Geçmiş", `hist:${m.sessionId}`)
+    .text("İzle", `watch:${m.sessionId}`);
 
   // A live session running in another process can be terminated by PID. The
   // bot's own agent (selfPid) is never offered — killing it would stop the bot.
@@ -58,18 +78,10 @@ export function buildSessionCard(m: SessionMeta, extra: SessionCardExtras = {}):
   return { text: lines.join("\n"), keyboard };
 }
 
-/** Compact relative time, e.g. "42s ago", "5m ago", "3h ago", "2d ago". */
-export function relTime(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return "unknown";
-  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  return `${d}d ago`;
+function sessionDate(iso: string): string {
+  const time = new Date(iso);
+  if (!Number.isFinite(time.getTime())) return "Tarih bilinmiyor";
+  return time.toLocaleString("tr-TR", { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
 /** Human-readable byte size, e.g. "812 B", "42.3 KB", "1.2 MB". */

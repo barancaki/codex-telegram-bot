@@ -3,7 +3,7 @@
  */
 import { config as loadDotenv } from "dotenv";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -238,13 +238,18 @@ export function loadConfig(): AppConfig {
 
 /** Resolve the codex binary path across platforms.
  *
- * Order: explicit override → `where`/`which codex` on PATH → common install
+ * Order: explicit override → Windows desktop Codex → `where`/`which codex` on PATH → common install
  * dirs (incl. the npm-global bin next to node) → bare `codex`. On Windows an
  * npm install exposes a `codex.cmd` shim (the native `codex.exe` is buried in a
  * vendor dir), so a bare `spawn("codex")` fails with ENOENT — resolving the
  * real path here (and launching via a shell, see {@link codexLaunch}) fixes it. */
-function resolveCodexPath(explicit?: string): string {
+export function resolveCodexPath(explicit?: string): string {
   if (explicit) return expandHome(explicit);
+
+  if (process.platform === "win32") {
+    const desktop = desktopCodexPath();
+    if (desktop) return desktop;
+  }
 
   const onPath = whichCodex();
   if (onPath) return onPath;
@@ -273,6 +278,23 @@ function resolveCodexPath(explicit?: string): string {
     if (existsSync(c)) return c;
   }
   return "codex"; // last resort — PATH lookup at spawn time
+}
+
+function desktopCodexPath(): string | undefined {
+  const bin = join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "OpenAI", "Codex", "bin");
+  if (!existsSync(bin)) return undefined;
+  try {
+    const paths = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" | Select-Object -ExpandProperty ExecutablePath"], {
+      encoding: "utf-8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"], timeout: 5000,
+    }).split(/\r?\n/).map((p) => p.trim());
+    const active = paths.find((p) => p.toLowerCase().startsWith(`${bin.toLowerCase()}\\`) && existsSync(p));
+    if (active) return active;
+  } catch { /* Desktop may be closed or process metadata unavailable. */ }
+  try {
+    return readdirSync(bin, { withFileTypes: true }).filter((d) => d.isDirectory())
+      .map((d) => join(bin, d.name, "codex.exe")).filter(existsSync)
+      .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+  } catch { return undefined; }
 }
 
 /** Locate `codex` on PATH via the OS resolver (respects Windows PATHEXT). */

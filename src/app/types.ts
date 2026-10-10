@@ -3,8 +3,7 @@
  * prompt input model (text plus optional images) used across the bot.
  */
 
-export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "max"] as const;
-export type ReasoningEffort = (typeof REASONING_LEVELS)[number];
+export type ReasoningEffort = string;
 
 export interface ChatSettings {
   projectPath?: string;
@@ -28,7 +27,7 @@ export interface ControlledSession {
 }
 
 export function defaultSettings(): ChatSettings {
-  return { reasoning: "medium" };
+  return { reasoning: "" };
 }
 
 /** A decoded image to attach to a Codex prompt. */

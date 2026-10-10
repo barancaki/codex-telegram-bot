@@ -3,80 +3,72 @@
  * /active   — list sessions currently running on this PC.
  * /unwatch  — stop following a live session.
  *
- * Each session is shown as its own card (status, project + path, times, history
- * size, context %), with Connect (resume, or fork if the session is locked/live),
- * 📜 History (static view), and 📡 Watch (live read-only follow) buttons.
+ * One compact title picker opens a single detail card on demand.
  */
-import { type Bot, type Context, InlineKeyboard } from "grammy";
+import { type Bot, type Context } from "grammy";
 import { basename } from "node:path";
 import type { BotDeps } from "../deps.js";
 import { readHistory } from "../../sessions/history.js";
 import type { SessionMeta } from "../../sessions/types.js";
 import { refreshMenu } from "../menu/refresh.js";
 import { showHistory } from "./history.js";
-import { buildSessionCard } from "./session-card.js";
+import { buildSessionCard, buildSessionPage } from "./session-card.js";
 
-/** How many session cards per page. */
-const PAGE_SIZE = 10;
 const UUID = "([0-9a-fA-F-]{36})";
 
 export async function showSessions(ctx: Context, deps: BotDeps, query?: string): Promise<void> {
   const q = (query ?? "").trim().toLowerCase();
-  let metas = deps.store.list(q ? 400 : 200);
+  if (/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(q)) {
+    await showSessionDetails(ctx, deps, q, 0);
+    return;
+  }
+  let metas = deps.store.list(Infinity);
   if (q) {
     metas = metas.filter((m) => `${m.title} ${m.cwd} ${m.sessionId}`.toLowerCase().includes(q));
   }
   if (metas.length === 0) {
     await deps.ephemeral.open(ctx);
-    await deps.ephemeral.reply(ctx, q ? `No sessions match "${q}".` : "No saved sessions found in ~/.codex/sessions.");
+    await deps.ephemeral.reply(ctx, q ? `“${q}” için sohbet bulunamadı.` : "Kaydedilmiş Codex sohbeti bulunamadı.");
     return;
   }
-  deps.menuCache.setSessions(ctx.chat!.id, metas, q ? `Sessions matching "${q}"` : "Recent sessions");
+  deps.menuCache.setSessions(ctx.chat!.id, metas, q ? `Arama: “${q.slice(0, 100)}”` : "Son sohbetler");
   await renderSessionPage(ctx, deps, 0);
 }
 
-/** Render one page of session cards: header + up to PAGE_SIZE cards + nav footer. */
+/** Render exactly one compact picker message per page. */
 async function renderSessionPage(ctx: Context, deps: BotDeps, page: number): Promise<void> {
   await deps.ephemeral.open(ctx);
   const cached = deps.menuCache.getSessions(ctx.chat!.id);
   if (!cached) return;
-  const { metas, heading } = cached;
-  const totalPages = Math.max(1, Math.ceil(metas.length / PAGE_SIZE));
-  const p = Math.min(Math.max(0, page), totalPages - 1);
-  const slice = metas.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE);
+  const { text, keyboard } = buildSessionPage(cached.metas, cached.heading, page);
+  await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
+}
 
-  const live = slice.filter((m) => m.active).length;
-  const liveStr = live ? ` \u00B7 \u{1F7E2} ${live} live` : "";
-  const pageStr = totalPages > 1 ? ` \u00B7 page ${p + 1}/${totalPages}` : "";
-  await deps.ephemeral.reply(ctx, `\u{1F5C2} ${heading} \u2014 ${metas.length} total${liveStr}${pageStr}`);
-
-  for (const m of slice) {
-    const contextPct = deps.acp.metadataFor(m.sessionId)?.contextUsagePercentage;
-    const progress = deps.registry.controller(ctx.chat!.id).progressFor(m.sessionId);
-    const { text, keyboard } = buildSessionCard(m, { contextPct, selfPid: deps.acp.pid, progress });
-    await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
+async function showSessionDetails(ctx: Context, deps: BotDeps, id: string, page: number): Promise<void> {
+  await deps.ephemeral.open(ctx);
+  const meta = deps.store.get(id.toLowerCase());
+  if (!meta) {
+    await deps.ephemeral.reply(ctx, "Sohbet bulunamadı. /sessions ile listeyi yenile.");
+    return;
   }
-
-  if (totalPages > 1) {
-    const nav = new InlineKeyboard();
-    if (p > 0) nav.text("\u25C0 Prev", `sp:${p - 1}`);
-    nav.text(`${p + 1}/${totalPages}`, "noop");
-    if (p < totalPages - 1) nav.text("Next \u25B6", `sp:${p + 1}`);
-    await deps.ephemeral.reply(ctx, `\u{1F4C4} Page ${p + 1}/${totalPages}`, { reply_markup: nav });
-  }
+  const contextPct = deps.acp.metadataFor(meta.sessionId)?.contextUsagePercentage;
+  const progress = deps.registry.controller(ctx.chat!.id).progressFor(meta.sessionId);
+  const { text, keyboard } = buildSessionCard(meta, { contextPct, selfPid: deps.acp.pid, progress });
+  if (deps.menuCache.getSessions(ctx.chat!.id)) keyboard.row().text("◀ Listeye dön", `sp:${page}`);
+  await deps.ephemeral.reply(ctx, text, { reply_markup: keyboard });
 }
 
 export function registerSessions(bot: Bot, deps: BotDeps): void {
-  bot.command("sessions", (ctx) => showSessions(ctx, deps, ctx.match?.toString()));
+  bot.command(["sessions", "sohbet"], (ctx) => showSessions(ctx, deps, ctx.match?.toString()));
 
   bot.command("active", async (ctx) => {
     const metas = deps.store.listActive();
     if (metas.length === 0) {
       await deps.ephemeral.open(ctx);
-      await deps.ephemeral.reply(ctx, "No sessions are currently running on this PC.");
+      await deps.ephemeral.reply(ctx, "Masaüstündeki canlı durum diskten görülemiyor. Kaydedilmiş sohbetler: /sessions · Botun yönettiği sohbetler: /running");
       return;
     }
-    deps.menuCache.setSessions(ctx.chat!.id, metas, "Live sessions running now");
+    deps.menuCache.setSessions(ctx.chat!.id, metas, "Çalışan sohbetler");
     await renderSessionPage(ctx, deps, 0);
   });
 
@@ -85,16 +77,21 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     await renderSessionPage(ctx, deps, Number(ctx.match![1]));
   });
 
+  bot.callbackQuery(new RegExp(`^sc:${UUID}:(\\d+)$`), async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showSessionDetails(ctx, deps, ctx.match![1]!, Number(ctx.match![2]));
+  });
+
   bot.command("unwatch", async (ctx) => {
     const rt = deps.registry.get(ctx.chat.id);
-    await ctx.reply(rt.stopWatch() ? "\u{1F6D1} Stopped watching." : "Not watching anything.");
+    await ctx.reply(rt.stopWatch() ? "İzleme durduruldu." : "İzlenen sohbet yok.");
   });
 
   bot.callbackQuery(new RegExp(`^sess:${UUID}$`), async (ctx) => {
     const id = ctx.match![1]!;
     const meta = deps.store.get(id);
     if (!meta) {
-      await ctx.answerCallbackQuery({ text: "Session not found." });
+      await ctx.answerCallbackQuery({ text: "Sohbet bulunamadı." });
       return;
     }
     await ctx.answerCallbackQuery();
@@ -107,11 +104,11 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
       const { result, alreadyControlled } = await deps.registry
         .controller(ctx.chat!.id)
         .addAttach(id, cwd, projectName, prior);
-      await ctx.reply(alreadyControlled ? `\u{1F500} Switched to ${meta.title}` : connectMessage(result, meta));
+      await ctx.reply(alreadyControlled ? `Geçildi: ${meta.title}` : connectMessage(result, meta));
       await refreshMenu(ctx, deps, `\u{1F4C2} ${meta.title}`);
       await showHistory(deps, ctx.chat!.id, id, meta);
     } catch (err) {
-      await ctx.reply(`\u274C Could not connect: ${(err as Error).message}`);
+      await ctx.reply(`Bağlanılamadı: ${(err as Error).message}`);
     }
   });
 
@@ -129,20 +126,20 @@ export function registerSessions(bot: Bot, deps: BotDeps): void {
     const rt = deps.registry.get(ctx.chat!.id);
     rt.startWatch(deps.store.jsonlPath(id));
     await ctx.reply(
-      `\u{1F4E1} Watching live: ${meta?.title ?? id.slice(0, 8)}\nNew activity streams here. Send /unwatch to stop.`,
+      `İzleniyor: ${meta?.title ?? id.slice(0, 8)}\nYeni içerik buraya gelir. Durdurmak için /unwatch.`,
     );
   });
 }
 
 function connectMessage(result: "resumed" | "forked", meta: SessionMeta): string {
   if (result === "resumed") {
-    return `\u2705 Resumed: ${meta.title}\n${meta.cwd}\n\nSend a message to continue.`;
+    return `Bağlandı: ${meta.title}\n${meta.cwd}\n\nDevam etmek için mesaj gönder.`;
   }
   return [
-    `\u26A0\uFE0F ${meta.title} is live on your PC right now, so Codex keeps it locked.`,
-    `I opened a linked continuation here in the same project with its recent context.`,
+    `“${meta.title}” aynı oturumdan sürdürülemedi.`,
+    `Aynı projede, son bağlamıyla bağlantılı bir devam sohbeti açıldı.`,
     `${meta.cwd}`,
     ``,
-    `Send a message to keep going \u2014 or tap \u{1F4E1} to watch the original live.`,
+    `Devam etmek için mesaj gönder; asıl sohbeti salt okunur takip etmek için İzle'yi kullan.`,
   ].join("\n");
 }

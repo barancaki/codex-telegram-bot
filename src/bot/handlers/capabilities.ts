@@ -30,9 +30,9 @@ export function registerCapabilities(bot: Bot, deps: BotDeps): void {
   bot.command("models", async (ctx) => {
     await ctx.replyWithChatAction("typing").catch(() => {});
     await deps.acp.refreshInventories();
-    const current = deps.acp.currentModelId;
-    const lines = deps.acp.availableModels.map((m) => `${m.modelId === current ? "✓" : "•"} ${m.name} (${m.modelId})`);
-    await ctx.reply(boundedList(`🧩 Codex models (${lines.length})`, lines, "No models were reported by Codex."));
+    const current = deps.registry.get(ctx.chat.id).model;
+    const lines = deps.acp.availableModels.map((m) => `${m.modelId === current ? "✓" : "•"} ${m.name} (${m.modelId})\n  Effort: ${m.supportedReasoningEfforts.join(", ") || "default"}`);
+    await ctx.reply(boundedList(`🧩 Codex ${deps.acp.agentInfo?.version ?? "unknown version"} · live model/list (${lines.length})`, lines, deps.acp.modelInventoryError ? "Codex model refresh failed. Try again shortly." : "No models were reported by Codex."));
   });
 
   bot.command("agents", async (ctx) => {
