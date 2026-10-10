@@ -75,7 +75,8 @@ export function readFirstPrompt(jsonlPath: string, maxBytes = 256 * 1024): strin
     readSync(fd, buf, 0, length, 0);
     for (const line of buf.toString("utf-8").split("\n")) {
       const e = parseEventLine(line);
-      if (e && e.role === "user" && e.text.trim()) return e.text;
+      if (e && e.role === "user" && e.text.trim() &&
+        !/^(?:#\s*AGENTS\.md instructions\b|<environment_context>|<permissions instructions>)/i.test(e.text.trim())) return e.text;
     }
     return "";
   } finally {

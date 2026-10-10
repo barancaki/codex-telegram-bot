@@ -24,7 +24,7 @@
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx scripts/security.test.ts",
+    "test": "tsx scripts/security.test.ts && tsx scripts/sessions.test.ts && tsx scripts/models.test.ts",
     "manual:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual.ps1 -Action Start",
     "manual:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual.ps1 -Action Stop",
     "manual:status": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/manual.ps1 -Action Status",

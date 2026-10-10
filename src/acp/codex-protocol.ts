@@ -53,6 +53,8 @@ export interface CodexThread {
 
 export interface CodexThreadResponse {
   thread: CodexThread;
+  model?: string;
+  reasoningEffort?: string | null;
 }
 
 export interface CodexThreadResumeParams {
@@ -229,7 +231,7 @@ export interface CodexModelInfo {
   model?: string;
   displayName?: string;
   description?: string;
-  supportedReasoningEfforts?: string[];
+  supportedReasoningEfforts?: Array<{ reasoningEffort: string; description?: string } | string>;
   defaultReasoningEffort?: string;
   isDefault?: boolean;
 }

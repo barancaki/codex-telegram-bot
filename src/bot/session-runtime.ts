@@ -10,7 +10,6 @@ import { type AcpClient, isAccountExhaustedError, isContextExhaustedError, isTra
 import type { AccountRotator } from "./account-rotator.js";
 import type { ContentBlock, PromptResult, SessionUpdate } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
-import { reasoningDirective } from "../app/reasoning.js";
 import type { SettingsStore } from "../app/settings-store.js";
 import { type PromptInput, type ReasoningEffort, textPrompt } from "../app/types.js";
 import { createLogger } from "../logger.js";
@@ -208,13 +207,13 @@ export class SessionRuntime {
     this.changed();
   }
   get reasoning(): ReasoningEffort {
-    return this.settings.get(this.chatId).reasoning;
+    return (this.sessionId ? this.acp.reasoningFor(this.sessionId) : this.settings.get(this.chatId).reasoning) || (this.model === this.acp.currentModelId ? this.acp.defaultReasoningEffort : undefined) || this.acp.availableModels.find((m) => m.modelId === this.model)?.defaultReasoningEffort || "";
   }
   get agent(): string | undefined {
     return this.settings.get(this.chatId).agent;
   }
   get model(): string | undefined {
-    return this.settings.get(this.chatId).model;
+    return this.sessionId ? this.acp.modelFor(this.sessionId) : this.settings.get(this.chatId).model || this.acp.currentModelId;
   }
 
   /** Latest context-usage % / effort / credits for the current session. */
@@ -277,6 +276,7 @@ export class SessionRuntime {
     this.rebindPending = false;
     this.cwd = cwd;
     this.projectName = projectName;
+    this.adoptSessionPrefs();
     this.persist();
     log.info(`chat ${this.chatId} -> resumed session ${sessionId} @ ${cwd}`);
     this.changed();
@@ -317,18 +317,19 @@ export class SessionRuntime {
   // ── preferences ──────────────────────────────────────────────────────────
 
   async setModelPref(modelId: string): Promise<{ ok: boolean; error?: string }> {
-    // Persist the choice always; only talk to the agent when a session is live in
-    // the current process (set_model on an unloaded session crashes the agent).
-    this.settings.update(this.chatId, { model: modelId });
-    if (modelId && this.sessionLive && this.sessionId) {
-      if (!this.acp.hasModel(modelId)) return { ok: false, error: `unknown model: ${modelId}` };
+    if (!this.acp.hasModel(modelId)) return { ok: false, error: `unknown model: ${modelId}` };
+    if (this.sessionId) {
       try {
+        await this.prepare();
         await this.acp.setModel(this.sessionId, modelId);
       } catch (e) {
         this.changed();
         return { ok: false, error: (e as Error).message };
       }
     }
+    const model = this.acp.availableModels.find((m) => m.modelId === (modelId || this.acp.currentModelId));
+    const effort = this.sessionId ? this.acp.reasoningFor(this.sessionId) : model?.modelId === this.acp.currentModelId ? this.acp.defaultReasoningEffort ?? model?.defaultReasoningEffort : model?.defaultReasoningEffort;
+    this.settings.update(this.chatId, { model: modelId, reasoning: effort ?? "" });
     this.changed();
     return { ok: true };
   }
@@ -345,7 +346,13 @@ export class SessionRuntime {
     this.changed();
   }
 
-  setReasoningPref(effort: ReasoningEffort): void {
+  async setReasoningPref(effort: ReasoningEffort): Promise<void> {
+    const model = this.acp.availableModels.find((m) => m.modelId === this.model);
+    if (effort && !model?.supportedReasoningEfforts.includes(effort)) throw new Error(`Unsupported reasoning effort: ${effort}`);
+    if (this.sessionId) {
+      await this.prepare();
+      this.acp.setReasoning(this.sessionId, effort);
+    }
     this.settings.update(this.chatId, { reasoning: effort });
     this.changed();
   }
@@ -354,7 +361,7 @@ export class SessionRuntime {
     const s = this.settings.get(this.chatId);
     // Drop any persisted model the agent doesn't actually offer (an unknown id
     // is silently accepted by set_model but then breaks the next prompt).
-    if (s.model && !this.acp.hasModel(s.model)) {
+    if (s.model && this.acp.availableModels.length && !this.acp.hasModel(s.model)) {
       log.warn(`clearing invalid persisted model "${s.model}" for chat ${this.chatId}`);
       this.settings.update(this.chatId, { model: "" });
     }
@@ -376,6 +383,14 @@ export class SessionRuntime {
         log.debug(`apply model failed: ${(e as Error).message}`);
       }
     }
+    const model = this.acp.availableModels.find((m) => m.modelId === this.model);
+    if (this.sessionId && cur.reasoning && model?.supportedReasoningEfforts.includes(cur.reasoning)) {
+      this.acp.setReasoning(this.sessionId, cur.reasoning);
+    }
+  }
+
+  private adoptSessionPrefs(): void {
+    this.settings.update(this.chatId, { model: this.acp.modelFor(this.sessionId), reasoning: this.acp.reasoningFor(this.sessionId) ?? "" });
   }
 
   // ── prompting ──────────────────────────────────────────────────────────────
@@ -418,7 +433,7 @@ export class SessionRuntime {
       if (await this.rebindWithRetries(this.sessionId)) {
         this.sessionLive = true;
         this.rebindPending = false;
-        await this.applySessionPrefs();
+        this.adoptSessionPrefs();
         log.info(`chat ${this.chatId} re-bound session ${this.sessionId.slice(0, 8)}`);
         return;
       }
@@ -497,7 +512,6 @@ export class SessionRuntime {
     this.sentImagesThisTurn = new Set();
 
     const content = buildContentBlocks(input, {
-      reasoning: reasoningDirective(this.reasoning),
       priming: this.primingContext,
       progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
@@ -653,7 +667,6 @@ export class SessionRuntime {
     this.subagentShown = new Map();
     this.streamer?.setFooter(this.hashtags()); // streamed reply tags the NEW session
     const forkContent = buildContentBlocks(input, {
-      reasoning: reasoningDirective(this.reasoning),
       priming: transcript ? buildPriming(transcript) : undefined,
       progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
@@ -695,7 +708,6 @@ export class SessionRuntime {
           this.subagentShown = new Map();
           this.streamer?.setFooter(this.hashtags());
           const content = buildContentBlocks(input, {
-            reasoning: reasoningDirective(this.reasoning),
             priming: transcript ? buildPriming(transcript) : undefined,
             progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
           });
@@ -804,7 +816,6 @@ export class SessionRuntime {
     const sessionId = this.sessionId;
     const delays = this.cfg.promptRetryAttempts > 0 ? backoffSchedule(this.cfg.promptRetryAttempts) : [RETRY_BASE_MS];
     const resumeContent = buildContentBlocks(textPrompt(RESUME_INSTRUCTION), {
-      reasoning: reasoningDirective(this.reasoning),
       progress: this.cfg.showProgress ? PROGRESS_DIRECTIVE : undefined,
     });
 

@@ -136,8 +136,10 @@ export class AcpClient extends EventEmitter {
   availableModes: Array<{ id: string; name: string; description?: string }> = [];
   currentModeId?: string;
   /** Models from Codex's `model/list`. */
-  availableModels: Array<{ modelId: string; name: string; description?: string }> = [];
+  availableModels: Array<{ modelId: string; name: string; description?: string; supportedReasoningEfforts: string[]; defaultReasoningEffort?: string }> = [];
   currentModelId?: string;
+  defaultReasoningEffort?: string;
+  modelInventoryError?: string;
   availableSkills: CodexSkillInfo[] = [];
   availableMcpServers: CodexMcpServerStatus[] = [];
 
@@ -312,13 +314,17 @@ export class AcpClient extends EventEmitter {
         modelId: m.model ?? m.id ?? "",
         name: m.displayName ?? m.model ?? m.id ?? "",
         description: m.description,
+        supportedReasoningEfforts: (m.supportedReasoningEfforts ?? []).map((e) => typeof e === "string" ? e : e.reasoningEffort),
+        defaultReasoningEffort: m.defaultReasoningEffort,
       })).filter((m) => m.modelId);
+      this.modelInventoryError = undefined;
       const def = list.find((m) => m.isDefault);
-      if (!this.currentModelId || !this.availableModels.some((m) => m.modelId === this.currentModelId)) {
-        this.currentModelId = def?.model ?? def?.id;
-      }
+      const config = ((await this.request("config/read", { includeLayers: false, cwd: this.opts.workspace }).catch(() => undefined)) as { config?: { model?: string; model_reasoning_effort?: string } } | undefined)?.config;
+      this.currentModelId = config?.model || def?.model || def?.id;
+      this.defaultReasoningEffort = config?.model_reasoning_effort;
     } catch (e) {
       this.availableModels = [];
+      this.modelInventoryError = (e as Error).message;
       log.debug("model/list unavailable:", (e as Error).message);
     }
   }
@@ -365,23 +371,31 @@ export class AcpClient extends EventEmitter {
     const id = res?.thread?.id;
     if (!id) throw new AcpError("thread/start returned no thread id");
     this.threadCwd.set(id, cwd);
+    this.adoptThreadSettings(id, res);
     return id;
   }
 
   async loadSession(sessionId: string, cwd: string): Promise<void> {
     // Field casing has varied across Codex builds (camelCase vs snake_case);
     // try the canonical camelCase, fall back to snake_case on an argument error.
+    let res: CodexThreadResponse;
     try {
-      await this.request("thread/resume", { threadId: sessionId });
+      res = (await this.request("thread/resume", { threadId: sessionId })) as CodexThreadResponse;
     } catch (e) {
       const msg = (e as Error).message.toLowerCase();
       if (/thread_?id|missing field|unknown field|invalid params|-32602/.test(msg)) {
-        await this.request("thread/resume", { thread_id: sessionId });
+        res = (await this.request("thread/resume", { thread_id: sessionId })) as CodexThreadResponse;
       } else {
         throw e;
       }
     }
     this.threadCwd.set(sessionId, cwd);
+    this.adoptThreadSettings(sessionId, res);
+  }
+
+  private adoptThreadSettings(id: string, res: CodexThreadResponse): void {
+    if (res.model) this.threadModel.set(id, res.model);
+    this.metadata.set(id, { ...this.metadata.get(id), effort: res.reasoningEffort ?? undefined });
   }
 
   hasMode(id: string): boolean {
@@ -390,15 +404,25 @@ export class AcpClient extends EventEmitter {
 
   hasModel(id: string): boolean {
     if (!id || id === "auto") return true;
-    if (this.availableModels.length === 0) return true;
     return this.availableModels.some((m) => m.modelId === id);
   }
 
   /** Resolve the model id to send for a thread: per-thread → default → none. */
-  private modelFor(threadId: string | undefined): string | undefined {
+  modelFor(threadId: string | undefined): string | undefined {
     const pref = (threadId && this.threadModel.get(threadId)) || this.currentModelId;
     if (!pref || pref === "auto") return undefined;
     return pref;
+  }
+
+  reasoningFor(threadId: string | undefined): string | undefined {
+    const model = this.modelFor(threadId);
+    return this.metadataFor(threadId)?.effort ?? (model === this.currentModelId ? this.defaultReasoningEffort : undefined) ?? this.availableModels.find((m) => m.modelId === model)?.defaultReasoningEffort;
+  }
+
+  setReasoning(sessionId: string, effort: string): void {
+    const model = this.availableModels.find((m) => m.modelId === this.modelFor(sessionId));
+    if (effort && !model?.supportedReasoningEfforts.includes(effort)) throw new AcpError(`Unsupported reasoning effort: ${effort}`);
+    this.metadata.set(sessionId, { ...this.metadata.get(sessionId), effort: effort || (model?.modelId === this.currentModelId ? this.defaultReasoningEffort : undefined) || model?.defaultReasoningEffort });
   }
 
   /**
@@ -441,13 +465,15 @@ export class AcpClient extends EventEmitter {
       };
       const model = this.modelFor(sessionId);
       if (model) params.model = model;
+      const effort = this.reasoningFor(sessionId);
+      if (effort) params.effort = effort;
       const mode = this.collaborationModes.get(this.threadMode.get(sessionId) ?? "");
       if (mode?.mode) {
         params.collaborationMode = {
           mode: mode.mode,
           settings: {
-            model: mode.model ?? model ?? "",
-            reasoning_effort: mode.reasoning_effort ?? null,
+            model: model ?? mode.model ?? "",
+            reasoning_effort: effort ?? mode.reasoning_effort ?? null,
             developer_instructions: null,
           },
         };
@@ -489,8 +515,13 @@ export class AcpClient extends EventEmitter {
   }
 
   async setModel(sessionId: string, modelId: string): Promise<void> {
-    this.threadModel.set(sessionId, modelId);
-    this.currentModelId = modelId;
+    if (!this.hasModel(modelId)) throw new AcpError(`Unknown Codex model: ${modelId}`);
+    const selected = modelId && modelId !== "auto" ? modelId : this.currentModelId;
+    if (selected) this.threadModel.set(sessionId, selected);
+    else this.threadModel.delete(sessionId);
+    const model = this.availableModels.find((m) => m.modelId === selected);
+    const effort = this.metadataFor(sessionId)?.effort;
+    if (effort && !model?.supportedReasoningEfforts.includes(effort)) this.setReasoning(sessionId, "");
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
