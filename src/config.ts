@@ -105,6 +105,7 @@ export interface AppConfig {
   logsDir: string;
   logFile: string;
   acpAutoRestart: boolean;
+  scheduledTasks: boolean;
   dataDir: string;
   promptIdleMs: number;
   quietNotifications: boolean;
@@ -158,6 +159,11 @@ export function loadConfig(): AppConfig {
       "TELEGRAM_BOT_TOKEN is missing. Copy .env.example to .env and set it (run `npm run setup`).",
     );
   }
+  if (!/^\d+:[A-Za-z0-9_-]+$/.test(token)) throw new Error("TELEGRAM_BOT_TOKEN has an invalid format.");
+  const allowedUsers = list(process.env.ALLOWED_USERS);
+  if (allowedUsers.length === 0 || allowedUsers.some((id) => !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
+    throw new Error("ALLOWED_USERS must contain at least one positive numeric Telegram user ID.");
+  }
 
   const workspaceRaw = process.env.CODEX_WORKSPACE?.trim() || process.cwd();
   const workspace = resolve(expandHome(workspaceRaw));
@@ -181,12 +187,12 @@ export function loadConfig(): AppConfig {
 
   const cfg: AppConfig = {
     token,
-    allowedUsers: new Set(list(process.env.ALLOWED_USERS)),
+    allowedUsers: new Set(allowedUsers),
     codexCliPath: resolveCodexPath(process.env.CODEX_CLI_PATH?.trim()),
     codexHome,
     workspace,
     agent: process.env.CODEX_AGENT?.trim() || undefined,
-    trustAllTools: bool(process.env.CODEX_TRUST_ALL_TOOLS, true),
+    trustAllTools: bool(process.env.CODEX_TRUST_ALL_TOOLS, false),
     projectRoots: [...new Set(roots)],
     streamThrottleMs: num(process.env.STREAM_THROTTLE_MS, 1500),
     messageBatchMs: nonNegNum(process.env.MESSAGE_BATCH_MS, 800),
@@ -202,6 +208,7 @@ export function loadConfig(): AppConfig {
     logsDir,
     logFile,
     acpAutoRestart: bool(process.env.ACP_AUTO_RESTART, true),
+    scheduledTasks: bool(process.env.SCHEDULED_TASKS, true),
     promptIdleMs: num(process.env.PROMPT_IDLE_TIMEOUT_MS, 900_000),
     quietNotifications: bool(process.env.QUIET_NOTIFICATIONS, true),
     promptRetryAttempts: nonNegNum(process.env.PROMPT_RETRY_ATTEMPTS, 5),

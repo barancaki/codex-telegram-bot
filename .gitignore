@@ -24,6 +24,7 @@ yarn-error.log*
 # ── Generated launchers / service artifacts ──────────────────────────────────
 run-service.vbs
 *.vbs
+*.lnk
 
 # ── Build / compile output ───────────────────────────────────────────────────
 dist/

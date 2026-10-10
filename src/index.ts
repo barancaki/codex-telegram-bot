@@ -19,9 +19,7 @@ async function main(): Promise<void> {
   enableFileLogging(cfg.logFile);
   const log = createLogger("main");
 
-  // Single-instance guard: kill any ghost/duplicate already polling this token
-  // (the usual cause of a stale "Not authorized" — an old process with an
-  // outdated .env). A plain manual start yields to a running background service.
+  // Never take over another process; a second launcher yields to the owner.
   const lock = new InstanceLock(
     cfg.token,
     join(CANONICAL_DIR, "locks"),
@@ -29,7 +27,7 @@ async function main(): Promise<void> {
   );
   if (cfg.singleInstance && !(await lock.acquire())) {
     process.stdout.write(
-      "\u26D4 Another Codex Telegram Bot is already running for this token (a background service). Use `codex-tg restart`, or `codex-tg stop` first.\n",
+      "\u26D4 Another instance owns this bot token. Stop that instance first.\n",
     );
     process.exit(0);
   }
@@ -50,7 +48,7 @@ async function main(): Promise<void> {
 
   await acp.start();
   const { bot, registry, scheduler, updater } = await createBot(cfg, acp);
-  scheduler.start();
+  if (cfg.scheduledTasks) scheduler.start();
   await updater.start();
 
   let shuttingDown = false;

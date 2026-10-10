@@ -108,6 +108,7 @@ async function dispatchMenu(ctx: Context, deps: BotDeps, action: string): Promis
       return showSessions(ctx, deps);
     case "tasks":
       await ctx.answerCallbackQuery();
+      if (!deps.cfg.scheduledTasks) return void ctx.reply("Scheduled tasks are disabled for this manual install.");
       return showTasks(ctx, deps);
     case "agent":
       await ctx.answerCallbackQuery();
