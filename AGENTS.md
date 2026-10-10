@@ -96,6 +96,13 @@ npm test               # offline access-control / approvals / ownership checks
 
 ## Personal Windows install
 
+For this personal fork, every completed update must be committed and pushed to
+`origin` (`barancaki/codex-telegram-bot`); verify that the remote branch has the
+same commit. The owner authorized this standing workflow on 2026-10-11; do not
+wait for a separate push request. Follow the feature PR workflow above for code
+changes, run applicable checks, and report failures before calling delivery
+complete. This applies to this project, not to backups of the memory vault.
+
 Use `scripts/manual.ps1` and `docs/MANUAL-WINDOWS-TR.md` for the manual-only
 install. Do not register a service, task, Startup launcher or Run key. Start
 forces tool approvals and disables updates, restarts and scheduled prompts.
