@@ -162,7 +162,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   });
 
   registerMenu(bot, deps); // persistent-keyboard buttons (hears)
-  registerWizardInput(bot, deps); // wizard text input (before commands)
+  if (cfg.scheduledTasks) registerWizardInput(bot, deps); // wizard text input (before commands)
   registerControl(bot, deps);
   registerProjects(bot, deps);
   registerSessions(bot, deps);
@@ -176,7 +176,8 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   registerCapabilities(bot, deps);
   registerKill(bot, deps);
   registerMcp(bot, deps);
-  registerTasks(bot, deps);
+  if (cfg.scheduledTasks) registerTasks(bot, deps);
+  else bot.command(["tasks", "newtask"], (ctx) => ctx.reply("Scheduled tasks are disabled for this manual install."));
   registerPhotos(bot, deps); // photos & image documents
   registerDocuments(bot, deps); // non-image files (text inlined, binaries saved)
   registerVoice(bot, deps); // voice / audio -> transcription -> prompt
@@ -187,7 +188,7 @@ export async function createBot(cfg: AppConfig, acp: AcpClient): Promise<BotBund
   });
 
   try {
-    await bot.api.setMyCommands(COMMANDS);
+    await bot.api.setMyCommands(cfg.scheduledTasks ? COMMANDS : COMMANDS.filter((c) => !["tasks", "newtask"].includes(c.command)));
   } catch (e) {
     log.warn("setMyCommands failed:", (e as Error).message);
   }

@@ -91,4 +91,14 @@ npm install            # install deps
 npm run dev            # run with auto-reload (tsx watch)
 npm start              # run once
 npm run typecheck      # REQUIRED before merge/release
+npm test               # offline access-control / approvals / ownership checks
 ```
+
+## Personal Windows install
+
+Use `scripts/manual.ps1` and `docs/MANUAL-WINDOWS-TR.md` for the manual-only
+install. Do not register a service, task, Startup launcher or Run key. Start
+forces tool approvals and disables updates, restarts and scheduled prompts.
+Keep `.env`, logs, data and desktop shortcuts out of Git. `npm test` and
+`powershell -NoProfile -File scripts/manual.ps1 -Action SelfTest` must pass.
+`scripts/smoke-local.ts` is read-only: no thread resume/start or inference.
